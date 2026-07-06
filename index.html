@@ -1484,10 +1484,30 @@ function loadPhoto(input, photoId, initialsId) {
   reader.readAsDataURL(file);
 }
 
+// ── FIREBASE REALTIME DATABASE ────────────────────────────────────────────
+
+const FIREBASE_URL = 'https://mapa-comercial-cu-medellin-default-rtdb.firebaseio.com';
+
+async function fbSet(path, value) {
+  try {
+    await fetch(`${FIREBASE_URL}/${path}.json`, {
+      method: 'PUT',
+      body: JSON.stringify(value),
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch(e) { console.warn('Firebase write error:', e); }
+}
+
+async function fbGet(path) {
+  try {
+    const res = await fetch(`${FIREBASE_URL}/${path}.json`);
+    return await res.json();
+  } catch(e) { console.warn('Firebase read error:', e); return null; }
+}
+
 // ── LOCAL STORAGE: auto-save & auto-load ──────────────────────────────────
 
 function getFieldKey(el) {
-  // Build a unique key from slide id + position index
   const slide = el.closest('.slide');
   const slideId = slide ? slide.id : 'global';
   const all = Array.from(document.querySelectorAll(`#${slideId} [contenteditable], #${slideId} textarea`));
@@ -1498,10 +1518,30 @@ function getFieldKey(el) {
 function saveField(el) {
   const key = getFieldKey(el);
   const val = el.tagName === 'TEXTAREA' ? el.value : el.innerText;
+  // Save locally
   try { localStorage.setItem(key, val); } catch(e) {}
+  // Save to Firebase
+  fbSet(key.replace(/\./g,'_'), val);
 }
 
-function loadAllFields() {
+async function loadAllFields() {
+  // Try Firebase first
+  try {
+    const data = await fbGet('');
+    if (data) {
+      document.querySelectorAll('[contenteditable], textarea').forEach(el => {
+        const key = getFieldKey(el).replace(/\./g,'_');
+        if (data[key] !== undefined && data[key] !== null && data[key] !== '') {
+          if (el.tagName === 'TEXTAREA') el.value = data[key];
+          else el.innerText = data[key];
+        }
+      });
+      showSyncStatus('✅ Datos cargados desde la nube');
+      return;
+    }
+  } catch(e) {}
+
+  // Fallback to localStorage
   document.querySelectorAll('[contenteditable], textarea').forEach(el => {
     const key = getFieldKey(el);
     try {
@@ -1512,24 +1552,49 @@ function loadAllFields() {
       }
     } catch(e) {}
   });
+  showSyncStatus('⚠️ Cargado desde caché local');
 }
 
 function clearSlideData(slideId) {
   try {
     Object.keys(localStorage)
       .filter(k => k.startsWith(`cibest_${slideId}_`))
-      .forEach(k => localStorage.removeItem(k));
+      .forEach(k => {
+        localStorage.removeItem(k);
+        fbSet(k.replace(/\./g,'_'), null);
+      });
   } catch(e) {}
 }
 
-// Attach listeners to all editable fields
 function attachSaveListeners() {
   document.querySelectorAll('[contenteditable]').forEach(el => {
-    el.addEventListener('input', () => saveField(el));
+    el.addEventListener('input', () => { saveField(el); showSyncStatus('💾 Guardado automáticamente'); });
   });
   document.querySelectorAll('textarea').forEach(el => {
-    el.addEventListener('input', () => saveField(el));
+    el.addEventListener('input', () => { saveField(el); showSyncStatus('💾 Guardado automáticamente'); });
   });
+}
+
+// ── SYNC STATUS TOAST ────────────────────────────────────────────────────
+
+function showSyncStatus(msg) {
+  let toast = document.getElementById('sync-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'sync-toast';
+    toast.style.cssText = `
+      position:fixed; bottom:24px; right:24px; z-index:9999;
+      background:#1e293b; border:1px solid rgba(255,255,255,0.12);
+      color:#94a3b8; font-size:12px; font-weight:600;
+      padding:8px 16px; border-radius:8px;
+      transition: opacity 0.4s; pointer-events:none;
+    `;
+    document.body.appendChild(toast);
+  }
+  toast.innerText = msg;
+  toast.style.opacity = '1';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { toast.style.opacity = '0'; }, 2500);
 }
 
 // ── EXPORT ───────────────────────────────────────────────────────────────
@@ -1582,9 +1647,9 @@ function exportSlide(slideId, amName) {
 
 // ── INIT ─────────────────────────────────────────────────────────────────
 
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
   connectPresales();
-  loadAllFields();
+  await loadAllFields();
   attachSaveListeners();
 });
 window.addEventListener('resize', connectPresales);
